@@ -1,47 +1,74 @@
-﻿$phoneOctet = # Enter the octet used for phones in your DHCP scopes, e.g., "20" for
-$dhcpServer = "dhcpServer"
-$phoneScopes = Get-DhcpServerv4Scope  -ComputerName $dhcpServer | Where-Object scopeid -like *.*.$phoneOctet.*
+﻿$phoneOctet = $env:phoneOctet
+$dhcpServer = $env:dhcpServer
 
-$allResults = $phoneScopes | ForEach-Object -Parallel{
-    $data = New-Object System.Collections.Generic.List[object]
+$phoneScopes = Get-DhcpServerv4Scope -ComputerName $dhcpServer |
+    Where-Object ScopeId -like "*.*.$phoneOctet.*"
+
+$allResults = $phoneScopes | ForEach-Object -Parallel {
+
     $phoneScope = $_
-    $leases = Get-DhcpServerv4Lease -ComputerName $dhcpServer -ScopeId $phoneScope.ScopeId -AllLeases
-    Write-Host "Scope id:$($phoneScope.ScopeId)"
-    $results = $leases | ForEach-Object -Parallel{
-        $lease= $_
-        
 
+    Write-Host "Scope id:$($phoneScope.ScopeId)"
+
+    $leases = Get-DhcpServerv4Lease -ComputerName $using:dhcpServer -ScopeId $phoneScope.ScopeId -AllLeases
+
+    $leases | ForEach-Object -Parallel {
+
+        $lease = $_
         $ip = $lease.IPAddress
-        try{
-            $contenu = (Invoke-WebRequest -Uri "http://${ip}" -UseBasicParsing).content
-            $found = $false
-            $model = $null
+
+        try {
+            $contenu = (Invoke-WebRequest -Uri "http://${ip}" -UseBasicParsing).Content
+
+            # --- Version ---
             $version = $null
-            $found = $contenu  -match "<TD><B>V\d+</B></TD>"
-            if($found){
-                $temp = $matches[0] -match "\d+"
-                $version = $Matches[0]
-                $found = $true
-          
-                $found_phone_model = $contenu -match "Cisco IP Phone \d+"
-                if($found_phone_model){
-                    $temp = $matches[0] -match "\d+"
-                    $model = $Matches[0]
-                }
+            if ($contenu -match "<TD><B>V(\d+)</B></TD>") {
+                $version = $Matches[1]
+            }
+
+            # --- Modele ---
+            $model = $null
+            if ($contenu -match "Cisco IP Phone (\d+)") {
+                $model = $Matches[1]
+            }
+
+            # --- DN ---
+            $dn = $null
+            if ($contenu -match "Numéro de téléphone.*?<B>\s*(\d+)\s*</B>") {
+                $dn = $Matches[1]
+            }
+
+            # --- MAC ---
+            $mac = $null
+            if ($contenu -match "Adresse MAC.*?<B>\s*([0-9A-F]{12})\s*</B>") {
+                $mac = $Matches[1]
+            }
+
+            # On retourne seulement si on a détecté quelque chose
+            if ($model -or $dn -or $mac) {
                 [PSCustomObject]@{
                     ScopeId = $using:phoneScope.ScopeId
                     Ip      = $ip
                     Model   = $model
                     Version = $version
+                    DN      = $dn
+                    MAC     = $mac
                 }
             }
 
+        } catch {
+            # silence
         }
-        catch {}
+
     } -ThrottleLimit 20
-    $results = $results | Where-Object { $_ -ne $null }
-    $results
-  
+
 } -ThrottleLimit 5
-Write-Host $allResults
-$allResults | Where-Object { $_ -ne $null } | Export-Csv -Path ".\all_phones.csv" -NoTypeInformation
+
+# Nettoyage des null
+$allResults = $allResults | Where-Object { $_ -ne $null }
+
+# Export
+$allResults | Export-Csv -Path ".\all_phones.csv" -NoTypeInformation
+
+# Affichage
+$allResults
